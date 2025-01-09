@@ -2,3 +2,4 @@ zhipuai
 requests
 uuid
 json
+socket
