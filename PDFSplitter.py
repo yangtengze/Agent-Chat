@@ -11,7 +11,7 @@ class PDFSpliter:
 
     def __init__(self, file_path):
         self.file_path = file_path
-        self.ocrEngine = get_ppstructure_engine()
+        self.ocr_engine = get_ppstructure_engine()
         self.chunks = []
 
     def __parse_text(self, block):
@@ -149,7 +149,7 @@ class PDFSpliter:
                         
                 elif block['type'] == 1:
                     img_bytes = block['image']
-                    t = self.__parse_image(image_bytes=img_bytes, ocr_engine=self.ocrEngine)
+                    t = self.__parse_image(image_bytes=img_bytes, ocr_engine=self.ocr_engine)
                     print("parse_image:", t)
 
 if __name__ == "__main__":
