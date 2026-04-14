@@ -4,6 +4,7 @@ import io
 import numpy as np
 import re
 from bs4 import BeautifulSoup
+
 from OcrEngine import get_ppstructure_engine
 
 class PDFSpliter:
