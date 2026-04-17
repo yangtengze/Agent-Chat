@@ -5,6 +5,7 @@ import numpy as np
 import re
 from bs4 import BeautifulSoup
 from OcrEngine import get_ppstructure_engine
+from DocumentNode import ChunkType, DocumentNode, flatten_tree
 
 class PDFSpliter:
 
@@ -15,6 +16,19 @@ class PDFSpliter:
 
     def __parse_text(self, block):
         return block['lines'][0]['spans'][0]['text']
+    
+    def __parse_text_and_size(self, block):
+        """
+        不仅提取文本，还要提取该块的最大字号，用于判断是否为标题
+        """
+        text = ""
+        max_size = 0
+        for line in block['lines']:
+            for span in line['spans']:
+                text += span['text']
+                if span['size'] > max_size:
+                    max_size = span['size']
+        return text.strip(), max_size
     
     def __html_table_to_markdown(self, html_text):
         """HTML表格转Markdown"""
@@ -151,7 +165,103 @@ class PDFSpliter:
                     t = self.__parse_image(image_bytes=img_bytes, ocr_engine=self.ocr_engine)
                     print("parse_image:", t)
 
+    def parse_to_tree(self) -> DocumentNode:
+        """
+        解析 PDF 并返回 DocumentNode 结构树
+        """
+        doc = fitz.open(self.file_path)
+        
+        # 1. 初始化根节点和栈
+        root = DocumentNode(chunk_type=ChunkType.TITLE, chunk_level=0, content="ROOT")
+        stack = [root]
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            blocks = page.get_text('dict')['blocks']
+            
+            for block in sorted(blocks, key=lambda x: (x["bbox"][1], x["bbox"][0])):
+                # 记录页码等元数据
+                metadata = {"page": page_num + 1, "bbox": block["bbox"]}
+
+                if block['type'] == 0:  # 文本块
+                    if len(block['lines']) == 1:
+                        # 提取文本和最大字号
+                        t, font_size = self.__parse_text_and_size(block)
+                        if not t: continue
+                        
+                        # 根据字号大小来推断层级 (这里的阈值可以根据你的实际文档情况调整)
+                        is_title = False
+                        level = 0
+                        if font_size >= 18:
+                            is_title, level = True, 1
+                        elif font_size >= 15:
+                            is_title, level = True, 2
+                        elif font_size >= 13:
+                            is_title, level = True, 3
+                            
+                        if is_title:
+                            header_node = DocumentNode(
+                                chunk_type=ChunkType.TITLE,
+                                chunk_level=level,
+                                content=t,
+                                metadata=metadata
+                            )
+                            # 层级栈维护：退栈直到找到比当前级别高的父节点
+                            while len(stack) > 1 and stack[-1].chunk_level >= level:
+                                stack.pop()
+                            
+                            stack[-1].children.append(header_node)
+                            stack.append(header_node)
+                        else:
+                            # 判定为普通段落
+                            paragraph_node = DocumentNode(
+                                chunk_type=ChunkType.PARAGRAPH,
+                                chunk_level=0,
+                                content=t,
+                                metadata=metadata
+                            )
+                            stack[-1].children.append(paragraph_node)
+                            
+                    else:
+                        # 你的原逻辑：多行判定为表格
+                        t = self.__parse_table(block)
+                        table_node = DocumentNode(
+                            chunk_type=ChunkType.TABLE,
+                            chunk_level=0,
+                            content=t,
+                            metadata=metadata
+                        )
+                        stack[-1].children.append(table_node)
+                        
+                elif block['type'] == 1:  # 图片块
+                    img_bytes = block['image']
+                    t = self.__parse_image(image_bytes=img_bytes, ocr_engine=self.ocr_engine)
+                    image_node = DocumentNode(
+                        chunk_type=ChunkType.IMAGE,
+                        chunk_level=0,
+                        content=t,
+                        metadata=metadata
+                    )
+                    stack[-1].children.append(image_node)
+
+        return root
+
 if __name__ == "__main__":
-    pdf_path = "./text.pdf"
+    pdf_path = "./text/text_files/text.pdf"
     splitter = PDFSpliter(pdf_path)
-    splitter.parse_pdf()
+    # splitter.parse_pdf()
+    doc_tree_root = splitter.parse_to_tree()
+    doc_id_mock = 2002
+    chunk_entities = flatten_tree(doc_tree_root, doc_id=doc_id_mock)
+    
+    print("【PDF展平后的入库 Chunk 实体列表】：")
+    for chunk in chunk_entities:
+        if chunk.chunk_type == "title" and chunk.content == "ROOT":
+            continue
+            
+        print(f"ID: {chunk.id:02d} | 父亲ID: {str(chunk.parent_id):>4} | "
+              f"类型: {chunk.chunk_type:<9} | 层级: {chunk.chunk_level} | "
+              f"序号: {chunk.chunk_index:02d} | 页码: {chunk.metadata.get('page')}")
+        
+        content_preview = chunk.content.replace('\n', '\\n')[:30]
+        print(f"    内容: {content_preview}...")

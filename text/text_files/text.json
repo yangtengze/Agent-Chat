@@ -1,0 +1,34 @@
+{
+  "company": "科技有限公司",
+  "employees": [
+    {
+      "id": 1,
+      "name": "张三",
+      "department": "技术部",
+      "salary": 15000.50,
+      "skills": ["Python", "Go", "Rust"],
+      "active": true
+    },
+    {
+      "id": 2,
+      "name": "李四",
+      "department": "产品部",
+      "salary": 18000.00,
+      "skills": ["产品设计", "数据分析"],
+      "active": true
+    },
+    {
+      "id": 3,
+      "name": "王五",
+      "department": "技术部",
+      "salary": 22000.75,
+      "skills": ["Java", "微服务", "K8s"],
+      "active": false
+    }
+  ],
+  "metadata": {
+    "total": 3,
+    "version": 1.5,
+    "updated_at": "2024-01-15T09:30:00Z"
+  }
+}

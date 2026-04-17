@@ -2,6 +2,8 @@ from markdownify import markdownify as md
 from bs4 import BeautifulSoup
 from OcrEngine import get_ppstructure_engine
 import re
+from DocumentNode import ChunkType, DocumentNode, flatten_tree
+from pathlib import Path
 
 class HtmlSplitter:
 
@@ -69,36 +71,166 @@ class HtmlSplitter:
         
         return '\n'.join(md_lines)
     
-    def __parse_image(self, file_path, ocr_engine):
-        output = ocr_engine.predict(file_path)
+    def __parse_image(self, file_path, ocr_engine, html_dir=None):
+        """OCR识别图片，支持相对路径解析"""
+        # 解析为绝对路径
+        img_path = Path(file_path)
+        if not img_path.is_absolute() and html_dir:
+            img_path = (html_dir / img_path).resolve()
+        else:
+            img_path = img_path.resolve()
+        
+        # 检查文件是否存在
+        if not img_path.exists():
+            print(f"警告：图片不存在 {img_path}")
+            return f"[图片不存在: {file_path}]"
+        
+        output = ocr_engine.predict(str(img_path))
         markdown_texts = ''
         for res in output:
             text = res.markdown['markdown_texts']
-            # 用正则找到所有<table>...</table>，分别转换
             def replace_table(match):
                 table_html = match.group(0)
                 return self.__html_table_to_markdown(table_html)
             text = re.sub(r'<table.*?</table>', replace_table, text, flags=re.DOTALL)
-            # 清理残留的HTML标签（div, html, body等）
             text = re.sub(r'</?(div|html|body)[^>]*>', '', text)
             text = re.sub(r'style="[^"]*"', '', text)
-
             markdown_texts += text.strip() + '\n'
         return markdown_texts
        
     def parse_html(self):
+        html_dir = Path(self.file_path).parent.resolve()
         markdown_texts = self.__html_file_to_markdown()
         for d in markdown_texts.split('\n'):
             images = self.__extract_images_from_markdown(d)
             if images:
                 for image in images:
-                    texts = self.__parse_image(image['path'], self.ocr_engine)
+                    texts = self.__parse_image(image['path'], self.ocr_engine, html_dir)
                     print(texts)
             else:
                 print(d)
+    def parse_to_tree(self) -> DocumentNode:
+        """结构感知与层次化解析"""
+        html_dir = Path(self.file_path).parent.resolve()
 
+        root = DocumentNode(chunk_type=ChunkType.TITLE, chunk_level=0, content="ROOT")
+        stack = [root]
+        
+        current_block_lines = []
+        current_block_type = None
+
+        def flush_block():
+            nonlocal current_block_lines, current_block_type
+            if not current_block_lines:
+                return
+                
+            content = '\n'.join(current_block_lines).strip()
+            if content:
+                node = DocumentNode(
+                    chunk_type=current_block_type or ChunkType.PARAGRAPH,
+                    chunk_level=0,
+                    content=content
+                )
+                stack[-1].children.append(node)
+                
+            current_block_lines = []
+            current_block_type = None
+
+        markdown_texts = self.__html_file_to_markdown()
+        lines = markdown_texts.split('\n')
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # --- 1. 处理图片 ---
+            images = self.__extract_images_from_markdown(line)
+            if images:
+                flush_block()
+                for img in images:
+                    # 传入 html_dir 解析相对路径
+                    ocr_text = self.__parse_image(img['path'], self.ocr_engine, html_dir)
+                    img_node = DocumentNode(
+                        chunk_type=ChunkType.IMAGE,
+                        chunk_level=0,
+                        content=ocr_text, 
+                        metadata={"image_path": str(html_dir / img['path']) if not Path(img['path']).is_absolute() else img['path'], 
+                                "alt": img['alt']}
+                    )
+                    stack[-1].children.append(img_node)
+                continue
+                
+            # --- 2. 处理标题 (结构感知的核心) ---
+            header_match = re.match(r'^(#{1,6})\s+(.*)', line_stripped)
+            if header_match:
+                flush_block()
+                level = len(header_match.group(1)) # 几个 # 就是几级
+                
+                header_node = DocumentNode(
+                    chunk_type=ChunkType.TITLE,
+                    chunk_level=level,
+                    content=line_stripped
+                )
+                
+                # 维护层级树：如果当前栈顶的层级 >= 遇到的新层级，说明该回退了（比如遇到 ##，要把之前的 ### 弹出去）
+                while len(stack) > 1 and stack[-1].chunk_level >= level:
+                    stack.pop()
+                
+                # 新标题挂在父标题下
+                stack[-1].children.append(header_node)
+                # 新标题入栈，成为后续段落的新爸爸
+                stack.append(header_node)
+                continue
+                
+            # --- 3. 处理表格 ---
+            if line_stripped.startswith('|'):
+                if current_block_type != ChunkType.TABLE:
+                    flush_block()
+                    current_block_type = ChunkType.TABLE
+                current_block_lines.append(line_stripped)
+                continue
+                
+            # --- 4. 处理列表 ---
+            if re.match(r'^[-*+]\s+.*|^\d+\.\s+.*', line_stripped):
+                if current_block_type != ChunkType.LIST and current_block_type is not None:
+                    flush_block()
+                current_block_type = ChunkType.LIST
+                current_block_lines.append(line_stripped)
+                continue
+
+            # --- 5. 处理空行与普通段落 ---
+            if not line_stripped:
+                flush_block() # 空行代表段落结束
+                continue
+                
+            if current_block_type not in (ChunkType.PARAGRAPH, None):
+                flush_block()
+            current_block_type = ChunkType.PARAGRAPH
+            current_block_lines.append(line_stripped)
+            
+        flush_block() # 处理文件末尾残余的最后一块
+        return root
+    
 if __name__ == "__main__":
     file_path = "./text/text_files/text.html"
     splitter = HtmlSplitter(file_path)
-    splitter.parse_html()
+    # splitter.parse_html()
+    doc_tree_root = splitter.parse_to_tree()
+    doc_id_mock = 1001
+    chunk_entities = flatten_tree(doc_tree_root, doc_id=doc_id_mock)
+
+    for chunk in chunk_entities:
+        # 我们跳过 ROOT 节点不打印
+        if chunk.chunk_type == ChunkType.TITLE and chunk.content == "ROOT":
+            continue
+            
+        print(f"ID: {chunk.id:02d} | 父亲ID: {str(chunk.parent_id):>4} | "
+              f"类型: {chunk.chunk_type:<9} | 层级: {chunk.chunk_level} | "
+              f"序号: {chunk.chunk_index:02d}")
+        
+        # 截取内容展示
+        content_preview = chunk.content.replace('\n', '\\n')[:30]
+        print(f"    内容: {content_preview}...")
+        if chunk.metadata:
+            print(f"    元数据: {chunk.metadata}")
+        print("-" * 50)
     

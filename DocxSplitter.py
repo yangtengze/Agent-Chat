@@ -7,7 +7,7 @@ import re
 import numpy as np
 
 from OcrEngine import get_ppstructure_engine
-
+from DocumentNode import ChunkType,DocumentNode, flatten_tree
 class DocxSplitter:
 
     def __init__(self, file_path):
@@ -114,7 +114,100 @@ class DocxSplitter:
                 print(markdown_texts)
             print()
 
+    def parse_to_tree(self):
+        doc = Document(self.file_path)
+        root = DocumentNode(chunk_type=ChunkType.TITLE, chunk_level=0, content="ROOT")
+        stack = [root]
+        for element in doc.element.body:
+            tag_name = element.tag.split('}')[-1]
+            
+            if tag_name == 'p':
+                # 1. 提取当前段落的完整文本（跨越多个 <w:r> 的限制）
+                t_elements = element.findall(self.xml_base + 't')
+                content = self.__parse_text(t_elements).strip()
+                
+                # 2. 判断是否是标题以及层级
+                is_title = False
+                level = 0
+                tag_pPr = element.find(self.xml_base + 'pPr')
+                if tag_pPr is not None:
+                    tag_pStyle = tag_pPr.find(self.xml_base + 'pStyle')
+                    if tag_pStyle is not None:
+                        val = tag_pStyle.val
+                        # 兼容 val="1" 或 val="Heading1" 的情况
+                        if val and (val.isdigit() or 'Heading' in val):
+                            is_title = True
+                            level = int(val.replace('Heading', '').strip()) if 'Heading' in val else int(val)
+                
+                # 3. 文本节点建树与入栈
+                if content:
+                    if is_title:
+                        header_node = DocumentNode(
+                            chunk_type=ChunkType.TITLE,
+                            chunk_level=level,
+                            content=content
+                        )
+                        # 层级回溯：如果当前栈顶的层级 >= 遇到的新层级，出栈
+                        while len(stack) > 1 and stack[-1].chunk_level >= level:
+                            stack.pop()
+                        
+                        # 新标题挂在父标题下，并成为新的栈顶
+                        stack[-1].children.append(header_node)
+                        stack.append(header_node)
+                    else:
+                        paragraph_node = DocumentNode(
+                            chunk_type=ChunkType.PARAGRAPH,
+                            chunk_level=0,
+                            content=content
+                        )
+                        # 普通段落直接挂在当前栈顶（最近的标题）下
+                        stack[-1].children.append(paragraph_node)
+                        
+                # 4. 提取该段落内嵌入的图片
+                drawings = element.findall(self.xml_base + 'drawing')
+                for drawing in drawings:
+                    blips = drawing.findall(self.img_xml_base + 'blip')
+                    for blip in blips:
+                        embed = blip.get(self.relationships_xml_base + 'embed')
+                        if embed:
+                            image_part = doc.part.related_parts.get(embed)
+                            if image_part:
+                                image_bytes = image_part.blob
+                                image_content = self.__parse_image(image_bytes, self.ocr_engine)
+                                image_node = DocumentNode(
+                                    chunk_type=ChunkType.IMAGE,
+                                    chunk_level=0,
+                                    content=image_content
+                                )
+                                # 图片直接作为子节点挂在当前标题下
+                                stack[-1].children.append(image_node)
+                                
+            elif tag_name == 'tbl':
+                # 提取表格
+                markdown_texts = self.__parse_table(element) # 假设返回的是 MD 格式文本
+                table_node = DocumentNode(
+                    chunk_type=ChunkType.TABLE,
+                    chunk_level=0,
+                    content=markdown_texts
+                )
+                # 表格也挂在当前的栈顶（最近的标题）下
+                stack[-1].children.append(table_node)
+        return root
+
 if __name__ == "__main__":
-    pdf_path = "./text.docx"
+    pdf_path = "./text/text_files/text.docx"
     splitter = DocxSplitter(pdf_path)
-    splitter.parse_docx()
+    # splitter.parse_docx()
+    root = splitter.parse_to_tree()
+    doc_id_mock = 1001
+    chunk_entities = flatten_tree(root, doc_id=doc_id_mock)
+    print("\n【展平后的入库 Chunk 实体列表】：")
+    for chunk in chunk_entities:
+        if chunk.chunk_type == "title" and chunk.content == "ROOT":
+            continue
+            
+        print(f"ID: {chunk.id:02d} | 父亲ID: {str(chunk.parent_id):>4} | "
+            f"类型: {chunk.chunk_type:<9} | 层级: {chunk.chunk_level} | "
+            f"序号: {chunk.chunk_index:02d}")
+        content_preview = chunk.content.replace('\n', '\\n')[:30]
+        print(f"    内容: {content_preview}...")
