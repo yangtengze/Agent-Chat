@@ -74,11 +74,11 @@ graph TD
   - [x] JsonSplitter
   - [x] MdSplitter
   - [x] TxtSplitter
+- [x] **文档分块**
+  - [x] 结构感知
+  - [x] 层次化混合切分
 
 ### 🚧 进行中 (V0.2 - Q2 2026)
-- [ ] **文档分块**
-  - [ ] 结构感知
-  - [ ] 层次化混合切分
 - [ ] **基础RAG Pipeline**
   - [ ] 向量化与索引
   - [ ] 检索策略实现

@@ -73,11 +73,11 @@ graph TD
   - [x] JsonSplitter
   - [x] MdSplitter
   - [x] TxtSplitter
+- [x] **Document Chunking**
+  - [x] Structure-aware slicing
+  - [x] Hierarchical hybrid chunking
 
 ### 🚧 In Progress (V0.2 - Q2 2026)
-- [ ] **Document Chunking**
-  - [ ] Structure-aware slicing
-  - [ ] Hierarchical hybrid chunking
 - [ ] **Basic RAG Pipeline**
   - [ ] Vectorization and indexing
   - [ ] Retrieval strategy implementation
